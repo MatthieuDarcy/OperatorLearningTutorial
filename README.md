@@ -1,4 +1,4 @@
-# OperatorLearningTutorial
+# Operator Learning Tutorial
 Github repository for a tutorial on operator learning given at the university of Bern (01/2026)
 
 ## Step 0: download data
