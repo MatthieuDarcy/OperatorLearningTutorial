@@ -402,3 +402,114 @@ def cross_val_score(model, X, y, cv=5, scoring = None):
     return jnp.array(scores)
 
 # %%
+
+if __name__ == "__main__":
+
+    # example code
+    initial_guess = {
+        "alpha": 1e-8,
+        "length_scale": 1.0,
+        "normalize": False,
+        "pca_input_components": 20,
+        "pca_output_components": 20,
+        "weight_matern": 0.5,  
+        "nu": "1.5"  # Default value for nu
+    }
+
+    matern_kernel = matern_kernel_create(nu=initial_guess["nu"])  # Default value for nu
+    def kernel(x,y, param):
+        length_scale = param[0]
+        weight_matern = param[1]
+        weight_dot = 1.0 - weight_matern
+        return weight_matern * matern_kernel(x, y, length_scale) + weight_dot * dot_kernel(x, y)
+
+
+    model = BenchmarkGPR(
+        kernel=kernel,
+        parameters=jnp.array([initial_guess['length_scale'], initial_guess['weight_matern']]),  # Initial guess for length_scale
+        alpha= initial_guess['alpha'],
+        pca_input_components=initial_guess['pca_input_components'], # does pca under the hood
+        pca_output_components = initial_guess['pca_output_components'], # does pca under the hood
+        normalize= initial_guess['normalize'],
+        jit_kernel=True,
+    )
+
+    X_train = ...
+    y_train = ... 
+    X_val = ...
+    y_val = ...
+
+    model.fit(X_train, y_train)  # Fit the model with the training data and weights if provided
+
+    print("Initial cross validation loss ", jnp.mean(cross_val_score(model, X_val, y_val, cv=5, scoring=None)))  # Uses model.score
+
+
+    # Example optuna objective function for hyperparameter tuning
+    max_pca_input = 128
+    max_pca_output = 128
+    def objective(trial):
+        try:
+            pca_input_components = trial.suggest_int('pca_input_components', 0, max_pca_input) # 0 is no pca, otherwise it does pca under the hood
+            alpha = trial.suggest_float('alpha', 1e-11, 1e0, log=True)
+            length_scale = trial.suggest_float('length_scale', 1e-5, 1e5, log=True)
+            normalize = trial.suggest_categorical('normalize', [True, False])
+            pca_output_components = trial.suggest_int('pca_output_components', 0, max_pca_output)
+            weight_matern = trial.suggest_float('weight_matern', 0.0, 1.0)
+            nu = trial.suggest_categorical('nu', ['0.5', '1.5', '2.5', 'inf'])
+
+            parameters = jnp.array([length_scale, weight_matern])
+            matern_kernel = matern_kernel_create(nu=nu)  # Create the Matern kernel with the suggested nu
+
+            def kernel(x,y, param):
+                length_scale = param[0]
+                weight_matern = param[1]
+                weight_dot = 1.0 - weight_matern
+                return weight_matern * matern_kernel(x, y, length_scale) + weight_dot * dot_kernel(x, y)
+
+
+            model = BenchmarkGPR(
+                kernel=kernel,
+                parameters=parameters,
+                alpha=alpha,
+                normalize=normalize,
+                pca_input_components=pca_input_components,
+                pca_output_components=pca_output_components,
+            )
+
+            score = cross_val_score(model, X_train, y_train, cv=5, scoring = None)  # Uses model.score
+            score = jnp.mean(score)
+            if jnp.isnan(score) or jnp.isinf(score):
+                return jnp.inf
+            return score
+
+        except Exception as e:
+            print(f"Trial failed with error: {e}")
+            return jnp.inf
+        
+    initial_guess = {
+            "alpha": 1e-8,
+            "length_scale": 1.0,
+            "normalize": False,
+            "pca_input_components": 20,
+            "pca_output_components": 20,
+            "weight_matern": 0.5,  
+            "nu": "1.5",  # Default value for nu
+        }
+
+    import optuna
+    n_trials = 100
+    study = optuna.create_study(
+        sampler=optuna.samplers.TPESampler(seed=42),
+        direction="minimize",
+        load_if_exists=False,   # lets you resume from the same DB
+    )
+    # Add initial guess as first trial
+    study.enqueue_trial(initial_guess)
+    study.optimize(objective, n_trials=n_trials)  # Optimize hyper-parameters
+
+    print("Best trial:")
+    print("  Value: {}".format(study.best_trial.value))
+    print("  Params: ")
+    for key, value in study.best_trial.params.items():
+        print("    {}: {}".format(key, value))
+
